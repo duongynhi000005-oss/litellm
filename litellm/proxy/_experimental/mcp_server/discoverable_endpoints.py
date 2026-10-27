@@ -1478,7 +1478,27 @@ async def exchange_token_with_server(
             )
             return bridge_mint_error_response("invalid_refresh")
         return render_token_fault(fault)
-    token_response = response.json()
+    except httpx.RequestError as exc:
+        verbose_logger.error(
+            "OAuth token exchange failed with transport/request error for server %s: %s",
+            resolved_server.server_id,
+            exc,
+        )
+        return render_token_fault(
+            UpstreamProtocolFault(note=f"failed to communicate with upstream token endpoint: {exc}")
+        )
+
+    try:
+        token_response = response.json()
+    except Exception as exc:
+        verbose_logger.error(
+            "OAuth token exchange response from server %s was not valid JSON: %s",
+            resolved_server.server_id,
+            exc,
+        )
+        return render_token_fault(
+            UpstreamProtocolFault(note="upstream token response was not valid JSON")
+        )
 
     # Validate token response against server-configured rules before any storage.
     # This rejects tokens from wrong Slack workspaces, Atlassian orgs, etc.

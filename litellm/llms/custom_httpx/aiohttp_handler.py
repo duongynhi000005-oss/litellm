@@ -14,6 +14,7 @@ from litellm.llms.base_llm.chat.transformation import BaseConfig
 from litellm.llms.base_llm.image_variations.transformation import (
     BaseImageVariationConfig,
 )
+from litellm.constants import AIOHTTP_MAX_LINE_SIZE, AIOHTTP_MAX_FIELD_SIZE
 from litellm.llms.custom_httpx.aiohttp_transport import LiteLLMAiohttpTransport
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
@@ -89,7 +90,11 @@ class BaseLLMAIOHTTPHandler:
         if self.transport is None:
             connector: Final = self._get_connector()
             if connector:
-                return aiohttp.ClientSession(connector=connector)
+                return aiohttp.ClientSession(
+                    connector=connector,
+                    max_line_size=AIOHTTP_MAX_LINE_SIZE,
+                    max_field_size=AIOHTTP_MAX_FIELD_SIZE,
+                )
 
         transport: Final = self.transport or self._get_or_create_transport()
         if transport is not None and hasattr(transport, "_get_valid_client_session"):
@@ -98,7 +103,10 @@ class BaseLLMAIOHTTPHandler:
             except RuntimeError:
                 pass
 
-        return aiohttp.ClientSession()
+        return aiohttp.ClientSession(
+            max_line_size=AIOHTTP_MAX_LINE_SIZE,
+            max_field_size=AIOHTTP_MAX_FIELD_SIZE,
+        )
 
     def _get_async_client_session(self, dynamic_client_session: ClientSession | None = None) -> ClientSession:
         if dynamic_client_session:

@@ -28,6 +28,8 @@ from litellm.constants import (
     _DEFAULT_TTL_FOR_HTTPX_CLIENTS,
     AIOHTTP_CONNECTOR_LIMIT,
     AIOHTTP_CONNECTOR_LIMIT_PER_HOST,
+    AIOHTTP_MAX_LINE_SIZE,
+    AIOHTTP_MAX_FIELD_SIZE,
     AIOHTTP_KEEPALIVE_TIMEOUT,
     AIOHTTP_NEEDS_CLEANUP_CLOSED,
     AIOHTTP_SO_KEEPALIVE,
@@ -1351,6 +1353,8 @@ class AsyncHTTPHandler:
                 connector=TCPConnector(**transport_connector_kwargs),
                 cookie_jar=DummyCookieJar(),
                 trust_env=trust_env,
+                max_line_size=AIOHTTP_MAX_LINE_SIZE,
+                max_field_size=AIOHTTP_MAX_FIELD_SIZE,
             )
 
         # Use shared session if provided and valid

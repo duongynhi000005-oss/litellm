@@ -387,6 +387,11 @@ EVICTED_LLM_CLIENT_CLOSE_MAX_PENDING: Final = 10_000
 AIOHTTP_CONNECTOR_LIMIT: Final = get_env_int("AIOHTTP_CONNECTOR_LIMIT", 1000)
 AIOHTTP_CONNECTOR_LIMIT_PER_HOST: Final = get_env_int("AIOHTTP_CONNECTOR_LIMIT_PER_HOST", 500)
 AIOHTTP_KEEPALIVE_TIMEOUT: Final = get_env_int("AIOHTTP_KEEPALIVE_TIMEOUT", 15)
+# Aiohttp HTTP parser limits - default aiohttp limit is 8190 bytes which causes LineTooLong
+# errors on providers (e.g. GitHub OAuth token exchange with ~9.2 KB Content-Security-Policy headers).
+# Default to 64 KB (65536 bytes) with environment variable overrides.
+AIOHTTP_MAX_LINE_SIZE: Final = get_env_int("AIOHTTP_MAX_LINE_SIZE", 65536)
+AIOHTTP_MAX_FIELD_SIZE: Final = get_env_int("AIOHTTP_MAX_FIELD_SIZE", 65536)
 AIOHTTP_TTL_DNS_CACHE: Final = get_env_int("AIOHTTP_TTL_DNS_CACHE", 300)
 # TCP keep-alive (SO_KEEPALIVE) — opt-in. Required when running behind NAT/LBs
 # whose idle timeout is shorter than provider response timeouts (e.g. AWS NAT
