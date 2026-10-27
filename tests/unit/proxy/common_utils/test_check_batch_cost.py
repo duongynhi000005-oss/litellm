@@ -1845,6 +1845,80 @@ class TestUnmanagedVertexRouting:
         assert result is None
         prom.record_check_batch_cost_error.assert_called_once_with("unmanaged_no_matching_deployment")
 
+    def test_unmanaged_vertex_batch_disambiguates_by_gcs_bucket(self):
+        """When multiple deployments share the bare model name across projects/buckets,
+        route to the deployment whose configured gcs_bucket_name matches the gs:// URI."""
+        router = MagicMock()
+        router.resolve_model_name_from_model_id.return_value = None
+        router.get_model_list.return_value = [
+            {
+                "model_name": "gemini-team-a",
+                "litellm_params": {
+                    "model": "vertex_ai/gemini-2.5-flash",
+                    "custom_llm_provider": "vertex_ai",
+                    "gcs_bucket_name": "bucket-team-a",
+                },
+                "model_info": {"id": "deploy-team-a"},
+            },
+            {
+                "model_name": "gemini-team-b",
+                "litellm_params": {
+                    "model": "vertex_ai/gemini-2.5-flash",
+                    "custom_llm_provider": "vertex_ai",
+                    "gcs_bucket_name": "bucket-team-b",
+                },
+                "model_info": {"id": "deploy-team-b"},
+            },
+        ]
+        instance = self._instance(track_unmanaged=True, router=router)
+        job_b = self._job(
+            file_object=_unmanaged_vertex_file_object(
+                input_file_id="gs://bucket-team-b/litellm-vertex-files/publishers/google/models/gemini-2.5-flash/input.jsonl"
+            )
+        )
+
+        with patch(_IS_B64, return_value=False):
+            result = instance._resolve_job_routing(job_b, MagicMock())
+
+        assert result == ("deploy-team-b", "8823717160934178816")
+
+    def test_unmanaged_bedrock_batch_disambiguates_by_s3_bucket(self):
+        """When multiple deployments share the bare model name across accounts/buckets,
+        route to the deployment whose configured s3_bucket_name matches the s3:// URI."""
+        router = MagicMock()
+        router.resolve_model_name_from_model_id.return_value = None
+        router.get_model_list.return_value = [
+            {
+                "model_name": "claude-team-1",
+                "litellm_params": {
+                    "model": "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+                    "custom_llm_provider": "bedrock",
+                    "s3_bucket_name": "bucket-team-1",
+                },
+                "model_info": {"id": "deploy-team-1"},
+            },
+            {
+                "model_name": "claude-team-2",
+                "litellm_params": {
+                    "model": "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0",
+                    "custom_llm_provider": "bedrock",
+                    "s3_bucket_name": "bucket-team-2",
+                },
+                "model_info": {"id": "deploy-team-2"},
+            },
+        ]
+        instance = self._instance(track_unmanaged=True, router=router)
+        job_2 = self._job(
+            file_object=_unmanaged_bedrock_file_object(
+                input_file_id="s3://bucket-team-2/batches/litellm-bedrock-files-us.anthropic.claude-sonnet-4-20250514-v1-0-abc.jsonl"
+            )
+        )
+
+        with patch(_IS_B64, return_value=False):
+            result = instance._resolve_job_routing(job_2, MagicMock())
+
+        assert result == ("deploy-team-2", "arn:aws:bedrock:us-east-1:298249409318:model-invocation-job/1ofb47x17jua")
+
     def test_flag_on_non_gcs_input_is_not_unmanaged_vertex(self):
         """Flag on, but input_file_id is not a gs:// publishers path: treat as unroutable,
         do not attempt model derivation."""

@@ -465,6 +465,7 @@ class CheckBatchCost:
                     bare_model_name=VertexAIBatchTransformation.get_bare_model_name_from_gcs_file(
                         input_file_id
                     ),
+                    input_file_id=input_file_id,
                 )
             if BedrockBatchesConfig.is_unmanaged_s3_batch_input_file_id(input_file_id):
                 assert input_file_id is not None  # narrowed by is_unmanaged_s3_batch_input_file_id
@@ -475,6 +476,7 @@ class CheckBatchCost:
                     bare_model_name=BedrockBatchesConfig.get_bare_model_name_from_s3_file(
                         input_file_id
                     ),
+                    input_file_id=input_file_id,
                 )
             verbose_proxy_logger.info(
                 f"Skipping job {unified_object_id}: not a recognized unmanaged batch "
@@ -495,8 +497,11 @@ class CheckBatchCost:
         prom_logger: Optional["PrometheusLogger"],
         llm_provider: str,
         bare_model_name: str,
+        input_file_id: Optional[str] = None,
     ) -> Optional[Tuple[str, str]]:
-        deployment_id = self._get_deployment_id_for_bare_model(bare_model_name, llm_provider)
+        deployment_id = self._get_deployment_id_for_bare_model(
+            bare_model_name, llm_provider, input_file_id=input_file_id
+        )
         if deployment_id is None:
             verbose_proxy_logger.info(
                 f"Skipping unmanaged {llm_provider} batch {job.unified_object_id}: no {llm_provider} "
@@ -508,44 +513,138 @@ class CheckBatchCost:
         return deployment_id, job.unified_object_id
 
     def _get_deployment_id_for_bare_model(
-        self, bare_model_name: str, llm_provider: str
+        self,
+        bare_model_name: str,
+        llm_provider: str,
+        input_file_id: Optional[str] = None,
     ) -> Optional[str]:
+        target_bucket = self._extract_bucket_from_uri(input_file_id)
+
+        # When a bucket is present in the input file URI, prioritize matching deployments
+        # that explicitly specify the same bucket to disambiguate across projects/buckets.
+        if target_bucket:
+            matched_deployment = self._get_deployment_id_from_matching_deployments(
+                bare_model_name=bare_model_name,
+                llm_provider=llm_provider,
+                input_file_id=input_file_id,
+            )
+            if matched_deployment is not None:
+                return matched_deployment
+
         model_group = self.llm_router.resolve_model_name_from_model_id(bare_model_name)
         deployment_id = (
-            self._get_deployment_id_for_provider(model_group, llm_provider) if model_group else None
+            self._get_deployment_id_for_provider(
+                model_group, llm_provider, input_file_id=input_file_id
+            )
+            if model_group
+            else None
         )
         if deployment_id is not None:
             return deployment_id
 
         return self._get_deployment_id_from_matching_deployments(
-            bare_model_name, llm_provider
+            bare_model_name, llm_provider, input_file_id=input_file_id
         )
 
     def _get_deployment_id_from_matching_deployments(
-        self, bare_model_name: str, llm_provider: str
+        self,
+        bare_model_name: str,
+        llm_provider: str,
+        input_file_id: Optional[str] = None,
     ) -> Optional[str]:
         from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
+        target_bucket = self._extract_bucket_from_uri(input_file_id)
+        candidate_deployments = []
+
         for deployment in self.llm_router.get_model_list(model_name=None) or []:
             litellm_params = deployment.get("litellm_params") or {}
-            actual_model = litellm_params.get("model")
+            actual_model = (
+                litellm_params.get("model")
+                if isinstance(litellm_params, dict)
+                else getattr(litellm_params, "model", None)
+            )
             if not isinstance(actual_model, str):
                 continue
             if not self._is_bare_model_match(actual_model, bare_model_name):
                 continue
             try:
+                custom_llm_provider = (
+                    litellm_params.get("custom_llm_provider")
+                    if isinstance(litellm_params, dict)
+                    else getattr(litellm_params, "custom_llm_provider", None)
+                )
                 _, deployment_llm_provider, _, _ = get_llm_provider(
                     model=actual_model,
-                    custom_llm_provider=litellm_params.get("custom_llm_provider"),
+                    custom_llm_provider=custom_llm_provider,
                 )
             except Exception:
                 continue
             if deployment_llm_provider != llm_provider:
                 continue
             model_info = deployment.get("model_info") or {}
-            deployment_id = model_info.get("id")
+            deployment_id = (
+                model_info.get("id")
+                if isinstance(model_info, dict)
+                else getattr(model_info, "id", None)
+            )
             if isinstance(deployment_id, str):
-                return deployment_id
+                dep_bucket = self._get_deployment_bucket(litellm_params, model_info)
+                if target_bucket and dep_bucket == target_bucket:
+                    return deployment_id
+                candidate_deployments.append((deployment_id, dep_bucket))
+
+        if candidate_deployments:
+            if not target_bucket:
+                return candidate_deployments[0][0]
+            for dep_id, dep_bucket in candidate_deployments:
+                if dep_bucket is None:
+                    return dep_id
+            return None
+        return None
+
+    @staticmethod
+    def _extract_bucket_from_uri(uri: Optional[str]) -> Optional[str]:
+        if not uri or not isinstance(uri, str):
+            return None
+        if uri.startswith("gs://"):
+            parts = uri[5:].split("/", 1)
+            return parts[0] if parts and parts[0] else None
+        if uri.startswith("s3://"):
+            parts = uri[5:].split("/", 1)
+            return parts[0] if parts and parts[0] else None
+        return None
+
+    @staticmethod
+    def _get_deployment_bucket(litellm_params: Any, model_info: Any = None) -> Optional[str]:
+        keys = (
+            "gcs_bucket_name",
+            "s3_bucket_name",
+            "bucket_name",
+            "gcs_bucket",
+            "s3_bucket",
+            "bucket",
+        )
+        if isinstance(litellm_params, dict):
+            for k in keys:
+                val = litellm_params.get(k)
+                if val and isinstance(val, str):
+                    return val
+        elif litellm_params is not None:
+            for k in keys:
+                val = getattr(litellm_params, k, None)
+                if val and isinstance(val, str):
+                    return val
+        if isinstance(model_info, dict):
+            for k in keys:
+                val = model_info.get(k)
+                if val and isinstance(val, str):
+                    return val
+        elif model_info is not None:
+            for k in keys:
+                val = getattr(model_info, k, None)
+                if val and isinstance(val, str):
+                    return val
         return None
 
     @staticmethod
@@ -561,27 +660,52 @@ class CheckBatchCost:
         )
 
     def _get_deployment_id_for_provider(
-        self, model_group: str, llm_provider: str
+        self,
+        model_group: str,
+        llm_provider: str,
+        input_file_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Returns the first deployment id for `model_group` whose provider is `llm_provider`,
         skipping deployments from other providers that happen to share the model group name.
+        When input_file_id contains a bucket, deployments matching that bucket are prioritized.
         """
         from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
+        target_bucket = self._extract_bucket_from_uri(input_file_id)
+        candidate_ids = []
 
         for deployment_id in self.llm_router.get_model_ids(model_name=model_group):
             deployment_info = self.llm_router.get_deployment(model_id=deployment_id)
             if deployment_info is None:
                 continue
             try:
+                litellm_params = getattr(deployment_info, "litellm_params", None)
+                model = getattr(litellm_params, "model", None) if litellm_params else None
+                custom_llm_provider = (
+                    getattr(litellm_params, "custom_llm_provider", None)
+                    if litellm_params
+                    else None
+                )
                 _, deployment_llm_provider, _, _ = get_llm_provider(
-                    model=deployment_info.litellm_params.model,
-                    custom_llm_provider=deployment_info.litellm_params.custom_llm_provider,
+                    model=model,
+                    custom_llm_provider=custom_llm_provider,
                 )
             except Exception:
                 continue
             if deployment_llm_provider == llm_provider:
-                return deployment_id
+                dep_bucket = self._get_deployment_bucket(litellm_params)
+                if target_bucket and dep_bucket == target_bucket:
+                    return deployment_id
+                candidate_ids.append((deployment_id, dep_bucket))
+
+        if candidate_ids:
+            if not target_bucket:
+                return candidate_ids[0][0]
+            for dep_id, dep_bucket in candidate_ids:
+                if dep_bucket is None:
+                    return dep_id
+            return None
         return None
 
     @classmethod
