@@ -73,6 +73,24 @@ class GithubCopilotConfig(OpenAIConfig):
     ) -> tuple[str | None, str | None, str]:
         return self._get_openai_compatible_provider_info(model, api_base, api_key, custom_llm_provider)
 
+    @staticmethod
+    def _flatten_text_blocks(content: list) -> str | list:
+        """
+        Flatten a list of text blocks to a single string if all blocks are text,
+        preserving non-text blocks (e.g. images) as-is.
+        """
+        if not content:
+            return ""
+        text_parts = []
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                text_parts.append(block["text"])
+            else:
+                return content
+        return "".join(text_parts)
+
     def _transform_messages(
         self,
         messages,
@@ -83,16 +101,26 @@ class GithubCopilotConfig(OpenAIConfig):
         # Check if system-to-assistant conversion is disabled
         if litellm.disable_copilot_system_to_assistant:
             # GitHub Copilot API now supports system prompts for all models (Claude, GPT, etc.)
-            # No conversion needed - just return messages as-is
-            return messages
+            # Flatten list-form text blocks on system messages so the backend does not ignore them
+            transformed_messages: Final = []
+            for message in messages:
+                if message.get("role") == "system" and isinstance(message.get("content"), list):
+                    flattened = self._flatten_text_blocks(message["content"])
+                    transformed_messages.append(cast(AllMessageValues, {**message, "content": flattened}))
+                else:
+                    transformed_messages.append(message)
+            return transformed_messages
 
         # Default behavior: convert system messages to assistant for compatibility
         transformed_messages: Final = []
         for message in messages:
             if message.get("role") == "system":
+                content = message.get("content")
+                if isinstance(content, list):
+                    content = self._flatten_text_blocks(content)
                 # Convert system message to assistant message
                 transformed_messages.append(
-                    cast(AllMessageValues, {**message, "role": "assistant"})  # cast-ok: dict matches the union
+                    cast(AllMessageValues, {**message, "role": "assistant", "content": content})  # cast-ok: dict matches the union
                 )
             else:
                 transformed_messages.append(message)

@@ -966,3 +966,53 @@ def test_transform_response_carries_upstream_usage():
     assert result.usage.prompt_tokens == 11
     assert result.usage.completion_tokens == 7
     assert result.usage.total_tokens == 18
+
+
+def test_transform_messages_flattens_list_form_system_message_disabled_conversion():
+    config = GithubCopilotConfig()
+    litellm.disable_copilot_system_to_assistant = True
+
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]},
+        {"role": "user", "content": "What is 2+2?"},
+    ]
+
+    transformed = config._transform_messages(messages, model="github_copilot/claude-sonnet-5")
+    assert transformed[0]["role"] == "system"
+    assert transformed[0]["content"] == "You are a helpful assistant."
+    assert transformed[1] == messages[1]
+
+
+def test_transform_messages_flattens_list_form_system_message_default_conversion():
+    config = GithubCopilotConfig()
+    litellm.disable_copilot_system_to_assistant = False
+
+    messages = [
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "Instructions: "},
+                {"type": "text", "text": "Be concise."},
+            ],
+        },
+        {"role": "user", "content": "Hello"},
+    ]
+
+    transformed = config._transform_messages(messages, model="github_copilot/claude-sonnet-5")
+    assert transformed[0]["role"] == "assistant"
+    assert transformed[0]["content"] == "Instructions: Be concise."
+    assert transformed[1] == messages[1]
+
+
+def test_transform_messages_preserves_non_text_blocks_in_system_message():
+    config = GithubCopilotConfig()
+    litellm.disable_copilot_system_to_assistant = True
+
+    mixed_content = [
+        {"type": "text", "text": "See attached:"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+    ]
+    messages = [{"role": "system", "content": mixed_content}]
+
+    transformed = config._transform_messages(messages, model="github_copilot/claude-sonnet-5")
+    assert transformed[0]["content"] == mixed_content
