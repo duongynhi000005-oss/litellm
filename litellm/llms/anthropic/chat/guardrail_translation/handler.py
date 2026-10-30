@@ -700,12 +700,22 @@ class AnthropicMessagesHandler(BaseTranslation):
             if guardrailed_tools is not None:
                 # Convert tools back from OpenAI format to Anthropic format
                 anthropic_config: Final = AnthropicConfig()
+                original_tools_by_name: Final = {
+                    name: tool
+                    for tool in (data.get("tools") or [])
+                    if (name := anthropic_tool_name(tool)) is not None
+                }
                 anthropic_tools: Final[list[AllAnthropicToolsValues]] = []
                 for tool in guardrailed_tools:
                     converted_tool, mcp_server = anthropic_config.map_tool_helper(
                         _with_original_name(tool, original_tool_names.declared)
                     )
                     if converted_tool is not None:
+                        name = anthropic_tool_name(converted_tool)
+                        if name and name in original_tools_by_name:
+                            for k, v in original_tools_by_name[name].items():
+                                if k not in converted_tool:
+                                    converted_tool[k] = v
                         anthropic_tools.append(converted_tool)
                     # Note: MCP servers are handled separately in the main transformation
                 data["tools"] = (
